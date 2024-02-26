@@ -1,13 +1,15 @@
 from mpi4py import MPI
+import os
 
 import ufl
 import dolfinx as dfx
 from dolfinx_mpc import LinearProblem, MultiPointConstraint
 import numpy as np
 from dolfinx.mesh import create_unit_square, locate_entities_boundary
+from utils import get_next_subfolder
 
 tol = 1e-7
-Lx = 2.0
+Lx = 4.0
 Ly = 1.0
 
 def inlet_boundary(x):
@@ -26,18 +28,24 @@ def periodic_relation(x):
     return out_x
 
 if __name__ == "__main__":
-    Nx = 100
+    Nx = 200
+    Ny = 50
 
     kappa = 0.01
-    gamma = 1.0
-    beta = 0.001
+    gamma = 1.1*1.0
+    beta = 0.0001
     ueps = 0.1
 
-    dt = 0.005
+    dt = 0.01
     t_end = 2.0
     dump_intv = 10
 
-    mesh = create_unit_square(MPI.COMM_WORLD, Nx, Nx)
+    rtol = 1e-10
+
+    results_folder = "results_cooling"
+    folder = get_next_subfolder(results_folder)
+
+    mesh = create_unit_square(MPI.COMM_WORLD, Nx, Ny)
     mesh.geometry.x[:, 0] *= Lx
     mesh.geometry.x[:, 1] *= Ly
     S = dfx.fem.FunctionSpace(mesh, ("Lagrange", 1))
@@ -100,7 +108,7 @@ if __name__ == "__main__":
     L_p = ufl.rhs(F_p)
 
     problem_p = LinearProblem(a_p, L_p, mpc_p, bcs=bcs_p,
-                              petsc_options={"ksp_type": "cg", "ksp_rtol": 1e-10, "pc_type": "hypre", "pc_hypre_type": "boomeramg",
+                              petsc_options={"ksp_type": "cg", "ksp_rtol": rtol, "pc_type": "hypre", "pc_hypre_type": "boomeramg",
                                              "pc_hypre_boomeramg_max_iter": 1, "pc_hypre_boomeramg_cycle_type": "v",
                                              "pc_hypre_boomeramg_print_statistics": 0})
 
@@ -111,7 +119,7 @@ if __name__ == "__main__":
     L_T = ufl.rhs(F_T)
 
     problem_T = LinearProblem(a_T, L_T, mpc_T, bcs=bcs_T,
-                              petsc_options={"ksp_type": "bcgs", "ksp_rtol": 1e-10, "pc_type": "jacobi"})
+                              petsc_options={"ksp_type": "bcgs", "ksp_rtol": rtol, "pc_type": "jacobi"})
 
     # Project u for visualization (only used a few times)
     F_u = ufl.dot(u - u_, v) * ufl.dx
@@ -119,9 +127,9 @@ if __name__ == "__main__":
     L_u = ufl.rhs(F_u)
     problem_u = LinearProblem(a_u, L_u, mpc_u, bcs=[])
 
-    xdmff_T = dfx.io.XDMFFile(mesh.comm, "T.xdmf", "w")
-    xdmff_p = dfx.io.XDMFFile(mesh.comm, "p.xdmf", "w")
-    xdmff_u = dfx.io.XDMFFile(mesh.comm, "u.xdmf", "w")
+    xdmff_T = dfx.io.XDMFFile(mesh.comm, os.path.join(folder, "T.xdmf"), "w")
+    xdmff_p = dfx.io.XDMFFile(mesh.comm, os.path.join(folder, "p.xdmf"), "w")
+    xdmff_u = dfx.io.XDMFFile(mesh.comm, os.path.join(folder, "u.xdmf"), "w")
 
     xdmff_T.write_mesh(mesh)
     xdmff_p.write_mesh(mesh)
@@ -137,7 +145,7 @@ if __name__ == "__main__":
 
         p_h = problem_p.solve()
 
-        p_.x.array[:] = p_h.x.array
+        p_.x.array[:] = p_h.x.array[:]
         p_.x.scatter_forward()
 
         T_h = problem_T.solve()
