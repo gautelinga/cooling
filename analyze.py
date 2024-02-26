@@ -46,6 +46,9 @@ if __name__ == "__main__":
 
     for it in it_:
         t = t_[it]
+
+        print(f"it={it} t={t}")
+
         dset = dsets[t]
         with h5py.File(dset[0], "r") as h5f:
             T_[:] = h5f[dset[1]][:, 0]

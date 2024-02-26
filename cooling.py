@@ -6,7 +6,7 @@ import dolfinx as dfx
 from dolfinx_mpc import LinearProblem, MultiPointConstraint
 import numpy as np
 from dolfinx.mesh import create_unit_square, locate_entities_boundary
-from utils import get_next_subfolder
+from utils import get_next_subfolder, mpi_comm, mpi_rank, mpi_size
 
 tol = 1e-7
 Lx = 4.0
@@ -37,7 +37,7 @@ if __name__ == "__main__":
     ueps = 0.1
 
     dt = 0.01
-    t_end = 2.0
+    t_end = 20.0
     dump_intv = 10
 
     rtol = 1e-10
@@ -92,13 +92,13 @@ if __name__ == "__main__":
     u = ufl.TrialFunction(V)
     v = ufl.TestFunction(V)
 
-    T_ = dfx.fem.Function(S, name="T")
-    T_1 = dfx.fem.Function(S, name="T")
+    T_ = dfx.fem.Function(mpc_T.function_space, name="T")
+    T_1 = dfx.fem.Function(mpc_T.function_space, name="T")
 
-    factor_ = dfx.fem.Function(S, name="factor")
+    factor_ = dfx.fem.Function(mpc_p.function_space, name="factor")
     factor_.x.array[:] = 1.0
 
-    p_ = dfx.fem.Function(S, name="p")
+    p_ = dfx.fem.Function(mpc_p.function_space, name="p") #(S, name="p")
 
     #u0 = ufl.as_vector((1.0 + 1.0*ufl.sin(2*ufl.pi*x[1]), 0.))
     ux0 = 1.0 + ueps*ufl.sin(2*ufl.pi*x[1])
@@ -107,7 +107,7 @@ if __name__ == "__main__":
     a_p = ufl.lhs(F_p)
     L_p = ufl.rhs(F_p)
 
-    problem_p = LinearProblem(a_p, L_p, mpc_p, bcs=bcs_p,
+    problem_p = LinearProblem(a_p, L_p, mpc_p, u=p_, bcs=bcs_p,
                               petsc_options={"ksp_type": "cg", "ksp_rtol": rtol, "pc_type": "hypre", "pc_hypre_type": "boomeramg",
                                              "pc_hypre_boomeramg_max_iter": 1, "pc_hypre_boomeramg_cycle_type": "v",
                                              "pc_hypre_boomeramg_print_statistics": 0})
@@ -138,7 +138,8 @@ if __name__ == "__main__":
     it = 0
     t = 0.
     while t < t_end:
-        print(f"t = {t}")
+        if mpi_rank == 0:
+            print(f"t = {t}")
 
         # Update factor_ function
         factor_.x.array[:] = beta**-T_1.x.array
