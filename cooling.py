@@ -32,12 +32,12 @@ if __name__ == "__main__":
     Ny = 50
 
     kappa = 0.01
-    gamma = 1.1*1.0
-    beta = 0.0001
+    gamma = 3.0*1.1*1.0
+    beta = 0.001
     ueps = 0.1
 
     dt = 0.01
-    t_end = 20.0
+    t_end = 8.0
     dump_intv = 10
 
     rtol = 1e-10
