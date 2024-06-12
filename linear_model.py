@@ -5,11 +5,27 @@ import argparse
 from mpi4py import MPI
 mpi_size = MPI.COMM_WORLD.Get_size()
 mpi_rank = MPI.COMM_WORLD.Get_rank()
+
 if mpi_size > 1:
     if mpi_rank == 0:
         print("This script only works in serial. You are better off  \n"
               "simply running the parameter scan in parallel instead.")
-    exit()
+    # exit()
+
+def mpi_print(*args):
+    if mpi_rank == 0:
+        print(*args)
+
+def mpi_max(a):
+    local_max = np.max(a)
+    global_max = np.zeros(1, dtype=float)
+    MPI.COMM_WORLD.Allreduce(local_max, global_max, op=MPI.MAX)
+    return global_max[0]
+
+def mpi_stitch(a):
+    stitched = MPI.COMM_WORLD.gather(a)
+    if MPI.COMM_WORLD.rank == 0:
+        return np.concatenate(stitched)
 
 class Left(df.SubDomain):
     def inside(self, x, on_boundary):
@@ -58,7 +74,7 @@ if __name__ == "__main__":
     psi = -np.log(beta)
     xi = (- 1 + np.sqrt(1 + 4*kappa_eff*Gamma))/(2*kappa_eff)
 
-    print(kappa_eff, xi, 1.0/xi)
+    mpi_print(kappa_eff, xi, 1.0/xi)
 
     mesh = df.UnitIntervalMesh(nx)
     mesh.coordinates()[:, 0] = mesh.coordinates()[:, 0]**4
@@ -113,7 +129,7 @@ if __name__ == "__main__":
     bc_T_r = df.DirichletBC(W.sub(0), 0., subd, 2)
     bc_p_l = df.DirichletBC(W.sub(1), 0, subd, 2)
 
-    bcs = [bc_T_l] #, bc_T_r, bc_p_l]
+    bcs = [bc_T_l, bc_T_r, bc_p_l]
 
     a, L = df.lhs(F), df.rhs(F)
 
@@ -122,14 +138,19 @@ if __name__ == "__main__":
 
     plot = False
 
-    data = []
-
-    fig, ax = plt.subplots(1, 2)
+    if mpi_rank == 0:
+        data = []
+        fig, ax = plt.subplots(1, 2)
+    
+    xx = mpi_stitch(x.vector()[:])
+    if mpi_rank == 0:
+        idx = np.argsort(xx)
+        xx = xx[idx]
 
     t = 0.0
     it = 0
     while t < tmax:
-        print(t)
+        mpi_print(f"t = {t}")
         it += 1
 
         if t > tpert:
@@ -145,42 +166,134 @@ if __name__ == "__main__":
         #xdmff_T.write(T__, t)
         #xdmff_p.write(p__, t)
 
-        Tmax = np.max(T__.vector()[:])
-        pmax = np.max(p__.vector()[:])
-        data.append([t, Tmax, pmax])
+        Tmax = mpi_max(T__.vector()[:])
+        pmax = mpi_max(p__.vector()[:])
+        if mpi_rank == 0:
+            data.append([t, Tmax, pmax])
 
         if it % plot_intv == 0:
-            ax[0].plot(x.vector()[:], T__.vector()[:]/Tmax, label=f"$t={t:1.2f}$")
-            ax[1].plot(x.vector()[:], p__.vector()[:]/pmax)
+            TT = mpi_stitch(T__.vector()[:])
+            pp = mpi_stitch(p__.vector()[:])
+            if mpi_rank == 0:
+                ax[0].plot(xx, TT[idx]/Tmax, label=f"$t={t:1.2f}$")
+                ax[1].plot(xx, pp[idx]/pmax)
 
     #xdmff_T.close()
     #xdmff_p.close()
 
     #ax[0].semilogx()
     #ax[1].semilogx()
-    ax[0].set_xlabel(r"$x$")
-    ax[1].set_xlabel(r"$x$")
-    ax[0].set_ylabel(r"$T/T_{\rm max}$")
-    ax[1].set_ylabel(r"$p/p_{\rm max}$")
-    ax[0].legend()
+    if mpi_rank == 0:
+        ax[0].set_xlabel(r"$x$")
+        ax[1].set_xlabel(r"$x$")
+        ax[0].set_ylabel(r"$T/T_{\rm max}$")
+        ax[1].set_ylabel(r"$p/p_{\rm max}$")
+        ax[0].legend()
 
-    data = np.array(data)
+        data = np.array(data)
 
-    istart = int(tmax/dt)//2
+        istart = int(tmax/dt)//2
 
-    popt = np.polyfit(data[istart:, 0], np.log(data[istart:, 1]), 1)
-    gamma = popt[0]
+        popt = np.polyfit(data[istart:, 0], np.log(data[istart:, 1]), 1)
+        gamma = popt[0]
 
-    print(f"gamma = {gamma}")
+        print(f"gamma = {gamma}")
 
-    fig_, ax_ = plt.subplots(1, 1)
+        fig_, ax_ = plt.subplots(1, 1)
 
-    ax_.plot(data[:, 0], data[:, 1], label=r"$T_{\rm max}$")
-    ax_.plot(data[:, 0], data[:, 2], label=r"$p_{\rm max}$")
-    ax_.plot(data[:, 0], np.exp(gamma*data[:, 0]), label=r"fit")
-    ax_.semilogy()
-    ax_.set_xlabel("$t$")
-    ax_.set_ylabel("scalar")
-    ax_.legend()
-    
-    plt.show()
+        ax_.plot(data[:, 0], data[:, 1], label=r"$T_{\rm max}$")
+        ax_.plot(data[:, 0], data[:, 2], label=r"$p_{\rm max}$")
+        ax_.plot(data[:, 0], np.exp(gamma*data[:, 0]), label=r"fit")
+        ax_.semilogy()
+        ax_.set_xlabel("$t$")
+        ax_.set_ylabel("scalar")
+        ax_.legend()
+        
+        # plt.show()
+
+        import scipy.interpolate as intp
+
+        T0 = np.exp(-xi*xx)
+
+        T_intp = intp.InterpolatedUnivariateSpline(xx, TT[idx]/Tmax)
+        p_intp = intp.InterpolatedUnivariateSpline(xx, pp[idx]/Tmax)
+        pt_intp = intp.InterpolatedUnivariateSpline(xx, beta**(-T0) * pp[idx]/Tmax)
+
+        x = np.linspace(1e-7, Lx, 1000)
+        T = T_intp(x)
+        Tx = T_intp.derivative(1)(x)
+        Txx = T_intp.derivative(2)(x)
+
+        p = p_intp(x)
+        px = p_intp.derivative(1)(x)
+        pxx = p_intp.derivative(2)(x)
+
+        pt = pt_intp(x)
+        ptx = pt_intp.derivative(1)(x)
+        ptxx = pt_intp.derivative(2)(x)
+
+        T0 = np.exp(-xi*x)
+
+        fig, ax = plt.subplots(9, 1)
+        ax[0].plot(x, T)
+        ax[1].plot(x, Tx)
+        ax[2].plot(x, Txx)
+        
+        ax[3].plot(x, p)        
+        ax[4].plot(x, px)
+        ax[5].plot(x, pxx)
+        
+        ax[6].plot(x, pt)
+        ax[6].plot(x, -psi * Tx / (xi**2 * psi * T0 + k**2), label="est")
+        #ax[6].plot(x, -psi * k**-2 * Tx, label="est2")
+        ax[6].legend()
+
+        ax[7].plot(x, ptx)
+        ax[8].plot(x, ptxx)
+
+        fig, ax = plt.subplots(1, 2)
+
+        lam = (-1 + np.sqrt(1 + 4*kappa*(gamma + kappa*k**2 + Gamma)))/(2*kappa)
+
+        ax[0].plot(x, T)
+        ax[0].plot(x, np.exp(-lam*x))
+        ax[0].semilogy()
+
+        ax[1].plot(x, p)
+        ax[1].plot(x, np.exp(-lam*x))
+        ax[1].plot(x, np.exp(-k*x))
+        ax[1].semilogy()
+        ax[1].legend()
+
+        fig, ax = plt.subplots(1, 2)
+
+        T_terms = [Tx,
+                   -kappa_eff*Txx,
+                   (gamma + kappa*k**2 + Gamma - (2*kappa_par*xi+1)*psi*xi*T0) * T,
+                   -xi * T0 * (kappa_par*k**2 - (2*kappa_par*xi+1)*psi*xi*T0)*pt,
+                   xi * T0 * (2*kappa_par*xi+1)*ptx]
+
+        ax[0].plot(x, T_terms[0], label="Tx")
+        ax[0].plot(x, T_terms[1], label="2")
+        ax[0].plot(x, T_terms[2], label="3")
+        ax[0].plot(x, T_terms[3], label="4")
+        ax[0].plot(x, T_terms[4], label="5")
+        ax[0].plot(x, sum(T_terms), label="sum")
+        ax[0].axvline(x=xi**-1, color="k", label=r"$1/\xi$")
+        ax[0].legend()
+
+        p_terms = [ptxx, 
+                   psi*xi*T0*ptx,
+                   -(xi**2*psi*T0 + k**2)*pt,
+                   -psi * Tx]
+
+        ax[1].plot(x, p_terms[0], label="1")
+        ax[1].plot(x, p_terms[1], label="2")
+        ax[1].plot(x, p_terms[2], label="3")
+        ax[1].plot(x, p_terms[3], label="4")
+        ax[1].plot(x, sum(p_terms), label="sum")
+        ax[1].axvline(x=xi**-1, color="k", label=r"$1/\xi$")
+        ax[1].legend()
+
+        plt.show()
+        
